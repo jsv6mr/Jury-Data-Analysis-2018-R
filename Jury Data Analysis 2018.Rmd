@@ -1,0 +1,155 @@
+---
+title: "Jury Data Analysis 2018"
+author: "Javier Valcarcel"
+date: "July 30, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+**A priori knowledge**
+
+* The Court receives a list of potential juror's for each month (monthly juror pool)  
+* The monthly juror pool is randomly assigned into equal size groups (juror groups)  
+* These groups are heterogeneous, they contain varying percentages of jurors that show up when called
+* The Court knows how many jurors it will need for a given day and summons an arbitrary number of juror groups hoping to have sufficient turnout of summoned jurors  
+* Due to high levels of absenteeism in the monthly juror pool, the variance of turnout from juror groups can cause insufficient jurors to be summoned and a jury trial can be cancelled
+
+**GOAL**
+
+
+Predict which jurors will show up when their juror group is called so that the Court can accurately predict how many juror groups to call for a specific day's trial needs
+
+
+**Load necessary packages**
+```{r message = FALSE, warning = FALSE}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(stringr)
+library(ROCR)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+```
+**Import data**warnings()
+
+I import my Excel spreadsheet using the readxl library, a Hadley Wickham tool. Then I have to coerce data type because I have many categorical variables. Additionally, I do some preprocessing of the juror ID column because Excel removes leading 0's, so I use the stringr library to drop them back in.
+
+```{r}
+a <- read_excel("Book 1.xlsx")
+
+a$ID <- as.numeric(str_pad(string = a$ID, width = 9, side = "left", pad = "0"))
+a$Group <- as.factor(a$Group)
+a$Zip <- as.factor(a$Zip)
+a$Employment <- as.factor(a$Employment)
+a$Age <- as.numeric(a$Age)
+a$Gender <- as.factor(a$Gender)
+a$Success <- as.factor(a$Success)
+```
+**Missing values**
+
+The type coercion of the columns threw a warning that some number of NA's were introduced. So I go in and I find the NA and impute a value, in this case mean age. I check again after my work and find there are no more missing values.
+
+```{r warning = FALSE}
+str(a)
+dim(a)
+sum(is.na(a))
+a <- a %>%
+  mutate(Age = ifelse(is.na(Age), mean(Age, na.rm = TRUE), Age))
+dim(a)
+sum(is.na(a))
+```
+**Randomizing an ordered dataset and separating train/test**
+
+Since this dataset was created by hand from lists covering the jurors who did show up and the jurors who didn't separately, I should randomize the order before I split our dataset into train and test data. I then make an 80%/20% train/test split.
+
+```{r}
+a_random <- a[sample(nrow(a)), ]
+
+train <- a_random %>%
+  sample_n(.8 * nrow(a_random))
+
+test <- a_random %>%
+  setdiff(train)
+
+head(train)
+
+head(test)
+```
+**DATA VIZ**
+I plot each predictor variable against the response to look for trends.
+```{r echo = FALSE}
+a_viz1 <- ggplot(a_random, aes(x = Success, colour = Success, fill = Success)) +
+  geom_histogram(stat = "count") +
+  facet_wrap(~ Zip) +
+  ggtitle("Success by Zipcode")
+
+a_viz1
+
+a_viz2 <- ggplot(a_random, aes(x = Success, colour = Success, fill = Success)) + 
+  geom_histogram(stat = "count") +
+  facet_wrap(~ Gender) +
+  ggtitle("Success by Gender") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_classic()
+
+a_viz2
+
+a_viz3 <- ggplot(a_random, aes(x = Success, colour = Success)) +
+  geom_histogram(stat = "count") +
+  facet_wrap(~ Employment)
+
+a_viz3
+
+a_random %>%
+  mutate(decades = as.factor(round(Age/10))) %>%
+  ggplot(aes(x = decades, colour = Success, fill = Success)) +
+    geom_histogram(stat = "count") +
+    facet_wrap(~ Success)
+```
+**MODEL CREATION**
+
+I use the glmnet library to create a logistic regression model of the response variable Success onto the predictor variables Zip, Employment, Age and Gender. I use a series of checks to see if the logistic regression model is appropriate and informative.
+
+```{r}
+model <- glm(Success ~ Zip + Employment + Age + Gender, family = binomial(link = "logit"), data = train)
+
+summary(model)
+
+anova(model, test = "Chisq")
+
+test_preds <- predict(model, newdata = subset(test, select = c(3:6)), type = "response")
+test_preds <- ifelse(test_preds > 0.5, 1, 0)
+
+misClassError <- mean(test_preds != test$Success)
+1 - misClassError
+
+p <- predict(model, newdata = subset(test, select = c(3:6)), type = "response")
+pr <- prediction(p, test$Success)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+**Testing the model**
+
+We apply a number of test to verify the model's accuracy and utility. We look at the model and ANOVA objects. We create predictions and measure them against the true values to look at accuracy. Finally me map the ROC curve and measure the AUC which both indicate that the model predicts well.
+
+```{r}
+mod2_rf <- randomForest(Success ~ Age + Employment + Zip + Gender, data = train)
+mod2_rf
+importance(mod2_rf)
+test_predsRF <- predict(mod2_rf, newdata = subset(test, select = c(3:6)), type = "response")
+mean(test_predsRF == test$Success)
+tree_check <- rpart.control(cp = 0.001)
+mod3_tree <- rpart(Success ~ Age + Employment + Zip + Gender, data = train, method = "class", control = tree_check)
+test_predsTREE <- predict(mod3_tree, newdata = subset(test, select = c(3:6)), type = "class")
+mean(test_predsTREE == test$Success)
+rpart.plot(mod3_tree, type = 3, box.palette = c("red", "green"), fallen.leaves = TRUE)
+```
+
