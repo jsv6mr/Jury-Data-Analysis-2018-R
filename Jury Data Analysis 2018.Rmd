@@ -2,24 +2,26 @@
 title: "Jury Data Analysis 2018"
 author: "Javier Valcarcel"
 date: "July 30, 2018"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-**A priori knowledge**
+***What do we know?***
 
-* The Court receives a list of potential juror's for each month (monthly juror pool)  
-* The monthly juror pool is randomly assigned into equal size groups (juror groups)  
-* These groups are heterogeneous, they contain varying percentages of jurors that show up when called
-* The Court knows how many jurors it will need for a given day and summons an arbitrary number of juror groups hoping to have sufficient turnout of summoned jurors  
-* Due to high levels of absenteeism in the monthly juror pool, the variance of turnout from juror groups can cause insufficient jurors to be summoned and a jury trial can be cancelled
+* The Court receives a list of potential jurors for each month (monthly juror pool).  
+* The monthly juror pool is randomly assigned into initially equal size groups (juror groups).  
+* These juror groups have large differences in turnout that so far have been unpredictable.
+* The Court knows how many jurors it will need for a given day and wants to have a better method of determining how many groups to call in for that day's jury trials.
+* The juror system has demographic data from voter records and questionnaires that can be used to predict which jurors will show up when their juror group is called.
+* If we can make accurate predictions about which jurors will show up then we can total those predictions by group and create estimates for the Court to use when determining how many juror groups to call.
 
-**GOAL**
+**Goal**
 
-
-Predict which jurors will show up when their juror group is called so that the Court can accurately predict how many juror groups to call for a specific day's trial needs
+Accurately predict which jurors will show up when their juror group is called so that the Court can summon the correct number of juror groups for a specific day's trial needs.
 
 
 **Load necessary packages**
@@ -34,9 +36,9 @@ library(randomForest)
 library(rpart)
 library(rpart.plot)
 ```
-**Import data**warnings()
+**Import data**
 
-I import my Excel spreadsheet using the readxl library, a Hadley Wickham tool. Then I have to coerce data type because I have many categorical variables. Additionally, I do some preprocessing of the juror ID column because Excel removes leading 0's, so I use the stringr library to drop them back in.
+These are technical notes for anyone reviewing my code. I import my Excel spreadsheet using the readxl library. Then I coerce the data type because I have many categorical variables. Additionally, I do some preprocessing of the juror ID column because Excel removes leading 0's, so I use the stringr library to drop them back in.
 
 ```{r}
 a <- read_excel("Book 1.xlsx")
@@ -49,9 +51,10 @@ a$Age <- as.numeric(a$Age)
 a$Gender <- as.factor(a$Gender)
 a$Success <- as.factor(a$Success)
 ```
+
 **Missing values**
 
-The type coercion of the columns threw a warning that some number of NA's were introduced. So I go in and I find the NA and impute a value, in this case mean age. I check again after my work and find there are no more missing values.
+Technical note: The type coercion of the columns threw a warning that some number of NA's were introduced. So I go in and I find the NA and impute a value, in this case mean age. I check again after my work and find there are no more missing values.
 
 ```{r warning = FALSE}
 str(a)
@@ -62,9 +65,10 @@ a <- a %>%
 dim(a)
 sum(is.na(a))
 ```
+
 **Randomizing an ordered dataset and separating train/test**
 
-Since this dataset was created by hand from lists covering the jurors who did show up and the jurors who didn't separately, I should randomize the order before I split our dataset into train and test data. I then make an 80%/20% train/test split.
+Technical note: Since this dataset was created by hand from lists covering the jurors who did show up and the jurors who didn't separately, I should randomize the order before I split our dataset into train and test data. I then make an 80%/20% train/test split.
 
 ```{r}
 a_random <- a[sample(nrow(a)), ]
@@ -79,40 +83,96 @@ head(train)
 
 head(test)
 ```
-**DATA VIZ**
-I plot each predictor variable against the response to look for trends.
-```{r echo = FALSE}
-a_viz1 <- ggplot(a_random, aes(x = Success, colour = Success, fill = Success)) +
-  geom_histogram(stat = "count") +
-  facet_wrap(~ Zip) +
-  ggtitle("Success by Zipcode")
 
-a_viz1
+**Data Visualization**
 
-a_viz2 <- ggplot(a_random, aes(x = Success, colour = Success, fill = Success)) + 
-  geom_histogram(stat = "count") +
-  facet_wrap(~ Gender) +
-  ggtitle("Success by Gender") +
-  scale_fill_brewer(palette = "Set1") +
-  theme_classic()
+I now examine the data visually looking for cues about the underlying structure. This step is important because just looking at numbers might miss interesting information about the data that visualization would catch. Note that the employment indicator is tremendously predictive and counterintuitive. Before the visualization I expected that working age jurors with jobs might show up less than those without. This visualization indicates that it is the opposite. I visualize all of the predictors against the response and use color as an additional element for to look at the interaction of gender in employment and age.
 
-a_viz2
+```{r collapse = TRUE, warning = FALSE}
+zip_viz <- a_random %>%
+  mutate(Response = ifelse(Success == 1, "Showed up", "Failed to appear")) %>%
+  ggplot(aes(x = Zip, fill = Response, group = Response)) +
+    geom_histogram(stat = "count", position = "dodge") +
+    ggtitle("Response by Zip Code") +
+    scale_fill_brewer(palette = "Set1") +
+    theme_minimal() +
+    labs(x = "Count", y = "Response")
 
-a_viz3 <- ggplot(a_random, aes(x = Success, colour = Success)) +
-  geom_histogram(stat = "count") +
-  facet_wrap(~ Employment)
+zip_viz
 
-a_viz3
-
-a_random %>%
-  mutate(decades = as.factor(round(Age/10))) %>%
-  ggplot(aes(x = decades, colour = Success, fill = Success)) +
+gender_viz <- a_random %>%
+  mutate(Gender = ifelse(Gender == "M", "Male", "Female")) %>%
+  mutate(Response = ifelse(Success == 1, "Showed up", "Failed to appear")) %>%
+  ggplot(aes(x = Response, colour = Response, fill = Response)) + 
     geom_histogram(stat = "count") +
-    facet_wrap(~ Success)
-```
-**MODEL CREATION**
+    facet_wrap(~ Gender) +
+    ggtitle("Response by Gender") +
+    scale_fill_brewer(palette = "Set1") +
+    theme_minimal() +
+    labs(x = "Response", y = "Count")
 
-I use the glmnet library to create a logistic regression model of the response variable Success onto the predictor variables Zip, Employment, Age and Gender. I use a series of checks to see if the logistic regression model is appropriate and informative.
+gender_viz
+
+employment_viz <- a_random %>%
+  mutate(Response = ifelse(Success == 1, "Showed up", "Failed to appear")) %>%
+  mutate(Employment = ifelse(Employment == 1, "Indicated employment", "No indication of employment")) %>%
+  mutate(Gender = ifelse(Gender == "M", "Male", "Female")) %>%
+  ggplot(aes(x = Response, colour = Gender, fill = Gender)) +
+    geom_histogram(stat = "count") +
+    facet_wrap(~ Employment) +
+    ggtitle("Response by employment indication") +
+    labs(x = "Response", y = "Count") +
+    scale_fill_brewer(palette = "Set1")
+    theme_minimal()
+
+employment_viz
+
+age_viz <- a_random %>%
+  mutate(decades = as.integer(round(Age/10))) %>%
+  mutate(Response = ifelse(Success == 1, "Showed up", "Failed to appear")) %>%
+  mutate(Gender = ifelse(Gender == "M", "Male", "Female")) %>%
+  ggplot(aes(x = decades, colour = Gender, fill = Gender)) +
+    geom_histogram(stat = "count", binwidth = 10) +
+    ggtitle("Response by Age") +
+    labs(x = "Age (broken into decades)", y = "Count") +
+    scale_fill_brewer(palette = "Set1") +
+    facet_wrap(~ Response) +
+    theme_minimal()
+
+age_viz
+```
+
+**Summary Statistics**
+
+I create a brief summary of the data using both the summary function and tests of my own to help people understand what is most common for each category and how much the data vary.
+
+Technical Note: Due to so many covariates being categorical, central tendency is fairly visible from the histograms but these values do give some amount of insight into the shape of the numeric data. These seems to be borne out by the decision tree visualization to follow.
+
+```{r}
+summary(a_random)
+
+sort(table(a_random$Zip))
+
+mean(a_random$Age)
+
+median(a_random$Age)
+
+sd(a_random$Age)
+
+IQR(a_random$Age)
+```
+
+**Model Creation**
+
+I use the glmnet library to create a logistic regression model of the response variable Success onto the predictor variables Zip, Employment, Age and Gender. I use a series of checks to see if the logistic regression model is appropriate and informative. Then I also test decision trees and random forest since categorical data is well suited to tree methods. We find that the three classifiers have prediction accuracy that is quite close which is a decent indicator that at least this data set is predictable.
+
+Logistic regression: this technique seeks to fit the data to a line of best fit (trend line) then use that line to predict future values.
+
+Decision tree: this technique looks to divide the data into groups that maximize the similarity of the data in each group. It wants to create a bunch of different tests so that it ends with the best division of the data into the prediction groups of "failed to appear" or "showed up".
+
+Random Forest: this technique is a variant of decision trees where many trees are created then statistical noise is added so that an average of the trees might best approximate the true patterns of the data not just this sample.
+
+*Technical Note*: The following analysis will be from the machine learning paradigm. Since the end user of this data is unable to create sample surveys or expand the collection of useful predictors, strongly statistical methods become ineffective. With resource and information constraints, this problem seems to be more appropriate to a machine learning solution in that prediction as a measure of effectiveness will outpace standard statistical measures such as adjusted R squared. I use the accuracy of classification as the standard to evaluate model performance because the end user needs are met most effectively when the solution creates accurate predictions as opposed to understanding the underlying social conditions or set of incentives acting upon potential jurors. Those conditions and incentives are quite important beyond the scope of this analysis and seem more appropriate to policy discussions or academic inquiry.
 
 ```{r}
 model <- glm(Success ~ Zip + Employment + Age + Gender, family = binomial(link = "logit"), data = train)
@@ -123,6 +183,7 @@ anova(model, test = "Chisq")
 
 test_preds <- predict(model, newdata = subset(test, select = c(3:6)), type = "response")
 test_preds <- ifelse(test_preds > 0.5, 1, 0)
+
 
 misClassError <- mean(test_preds != test$Success)
 1 - misClassError
@@ -135,21 +196,35 @@ plot(prf)
 auc <- performance(pr, measure = "auc")
 auc <- auc@y.values[[1]]
 auc
-```
-**Testing the model**
 
-We apply a number of test to verify the model's accuracy and utility. We look at the model and ANOVA objects. We create predictions and measure them against the true values to look at accuracy. Finally me map the ROC curve and measure the AUC which both indicate that the model predicts well.
-
-```{r}
 mod2_rf <- randomForest(Success ~ Age + Employment + Zip + Gender, data = train)
 mod2_rf
+
 importance(mod2_rf)
+
 test_predsRF <- predict(mod2_rf, newdata = subset(test, select = c(3:6)), type = "response")
 mean(test_predsRF == test$Success)
+
 tree_check <- rpart.control(cp = 0.001)
 mod3_tree <- rpart(Success ~ Age + Employment + Zip + Gender, data = train, method = "class", control = tree_check)
+
 test_predsTREE <- predict(mod3_tree, newdata = subset(test, select = c(3:6)), type = "class")
 mean(test_predsTREE == test$Success)
+
 rpart.plot(mod3_tree, type = 3, box.palette = c("red", "green"), fallen.leaves = TRUE)
+
 ```
+
+**Conclusion**
+
+Comparing the error from all three models they are within a tight range. Ultimately I think decision trees or random forest might be the best solutions since they are better at strongly categorical data when compared to logistic regression. The trees will be clear in their decision criteria which will help stakeholders understand the inner workings of the model.
+
+The models seem to indicate that juror turnout is predictable and implementing a tool to advise the Clerk on how many juror groups to summon for a day's needs should reduce the occurence of jury trial cancellations. These models can help the Clerk to understand the variance in juror turnout between groups.
+
+*Technical Note*: Proceeding from a machine learning paradigm, model selection and tuning should be a continuous process. While this analysis indicates that the underlying process is predictable with machine learning tools, as access to larger data set and more covariates increases continuous model evaluation should be used. Scoring the model's accuracy and the implementation success would be advisable to provide process related metrics to ensure that the tool is being used effectively since it is quite possible to squander the statistical knowledge gains with inappropriate deployment of the prediction tool.
+
+This analysis is being made public so that further collaborators can inherit the analysis and contribute to refining this product in order to incrementally improve the process.
+
+*Github: /jsv6mr*
+
 
